@@ -409,6 +409,166 @@ func TestBattleLeaderboardHandler_MissingBattleID(t *testing.T) {
 	}
 }
 
+// Tests band display-name fallbacks on the song leaderboard (role_id 10).
+func TestLeaderboardHandler_BandNameFallback(t *testing.T) {
+	ctx := context.Background()
+	scoresCollection := database.GocentralDatabase.Collection("scores")
+	usersCollection := database.GocentralDatabase.Collection("users")
+	bandsCollection := database.GocentralDatabase.Collection("bands")
+
+	testSongID := 777001
+	namedOwnerPID := 777010
+	noBandOwnerPID := 777011
+	emptyBandOwnerPID := 777012
+	orphanOwnerPID := 777013
+
+	usersCollection.InsertOne(ctx, map[string]interface{}{
+		"pid": namedOwnerPID, "username": "named_owner", "console_type": 1,
+	})
+	usersCollection.InsertOne(ctx, map[string]interface{}{
+		"pid": noBandOwnerPID, "username": "noband_owner", "console_type": 1,
+	})
+	usersCollection.InsertOne(ctx, map[string]interface{}{
+		"pid": emptyBandOwnerPID, "username": "emptyband_owner", "console_type": 1,
+	})
+
+	bandsCollection.InsertOne(ctx, map[string]interface{}{
+		"owner_pid": namedOwnerPID, "band_id": 777100, "name": "The Real Band", "console_type": 1,
+	})
+	bandsCollection.InsertOne(ctx, map[string]interface{}{
+		"owner_pid": emptyBandOwnerPID, "band_id": 777101, "name": "", "console_type": 1,
+	})
+
+	scores := []map[string]interface{}{
+		{"pid": namedOwnerPID, "song_id": testSongID, "role_id": 10, "score": 4000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+		{"pid": noBandOwnerPID, "song_id": testSongID, "role_id": 10, "score": 3000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+		{"pid": emptyBandOwnerPID, "song_id": testSongID, "role_id": 10, "score": 2000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+		{"pid": orphanOwnerPID, "song_id": testSongID, "role_id": 10, "score": 1000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+	}
+	for _, score := range scores {
+		scoresCollection.InsertOne(ctx, score)
+	}
+
+	defer func() {
+		scoresCollection.DeleteMany(ctx, bson.M{"song_id": testSongID})
+		bandsCollection.DeleteMany(ctx, bson.M{"owner_pid": bson.M{"$in": []int{namedOwnerPID, emptyBandOwnerPID}}})
+		usersCollection.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": []int{namedOwnerPID, noBandOwnerPID, emptyBandOwnerPID}}})
+	}()
+
+	req := httptest.NewRequest("GET", "/leaderboard?song_id=777001&role_id=10", nil)
+	rr := httptest.NewRecorder()
+	restapi.LeaderboardHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	var response map[string][]restapi.LeaderboardEntry
+	decodeResponse(t, rr, &response)
+	leaderboard := response["leaderboard"]
+	if len(leaderboard) != 4 {
+		t.Fatalf("Expected 4 entries, got %d", len(leaderboard))
+	}
+
+	byPID := map[int]string{}
+	for _, entry := range leaderboard {
+		byPID[entry.PID] = entry.Name
+	}
+
+	if byPID[namedOwnerPID] != "The Real Band" {
+		t.Errorf("named band: got %q, want %q", byPID[namedOwnerPID], "The Real Band")
+	}
+	if byPID[noBandOwnerPID] != "noband_owner's Band" {
+		t.Errorf("missing band: got %q, want %q", byPID[noBandOwnerPID], "noband_owner's Band")
+	}
+	if byPID[emptyBandOwnerPID] != "emptyband_owner's Band" {
+		t.Errorf("empty band name: got %q, want %q", byPID[emptyBandOwnerPID], "emptyband_owner's Band")
+	}
+	if byPID[orphanOwnerPID] != "Unnamed Band" {
+		t.Errorf("orphan pid: got %q, want %q", byPID[orphanOwnerPID], "Unnamed Band")
+	}
+}
+
+// Tests band display-name fallbacks on the battle leaderboard (role_id 10).
+func TestBattleLeaderboardHandler_BandNameFallback(t *testing.T) {
+	ctx := context.Background()
+	scoresCollection := database.GocentralDatabase.Collection("scores")
+	usersCollection := database.GocentralDatabase.Collection("users")
+	bandsCollection := database.GocentralDatabase.Collection("bands")
+
+	testBattleID := 777002
+	namedOwnerPID := 777020
+	noBandOwnerPID := 777021
+	emptyBandOwnerPID := 777022
+	orphanOwnerPID := 777023
+
+	usersCollection.InsertOne(ctx, map[string]interface{}{
+		"pid": namedOwnerPID, "username": "battle_named", "console_type": 1,
+	})
+	usersCollection.InsertOne(ctx, map[string]interface{}{
+		"pid": noBandOwnerPID, "username": "battle_noband", "console_type": 1,
+	})
+	usersCollection.InsertOne(ctx, map[string]interface{}{
+		"pid": emptyBandOwnerPID, "username": "battle_empty", "console_type": 1,
+	})
+
+	bandsCollection.InsertOne(ctx, map[string]interface{}{
+		"owner_pid": namedOwnerPID, "band_id": 777200, "name": "Battle Band", "console_type": 1,
+	})
+	bandsCollection.InsertOne(ctx, map[string]interface{}{
+		"owner_pid": emptyBandOwnerPID, "band_id": 777201, "name": "", "console_type": 1,
+	})
+
+	scores := []map[string]interface{}{
+		{"pid": namedOwnerPID, "battle_id": testBattleID, "song_id": 100, "role_id": 10, "score": 4000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+		{"pid": noBandOwnerPID, "battle_id": testBattleID, "song_id": 100, "role_id": 10, "score": 3000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+		{"pid": emptyBandOwnerPID, "battle_id": testBattleID, "song_id": 100, "role_id": 10, "score": 2000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+		{"pid": orphanOwnerPID, "battle_id": testBattleID, "song_id": 100, "role_id": 10, "score": 1000, "stars": 5, "diff_id": 2, "notespct": 95, "instrument_mask": 0},
+	}
+	for _, score := range scores {
+		scoresCollection.InsertOne(ctx, score)
+	}
+
+	defer func() {
+		scoresCollection.DeleteMany(ctx, bson.M{"battle_id": testBattleID})
+		bandsCollection.DeleteMany(ctx, bson.M{"owner_pid": bson.M{"$in": []int{namedOwnerPID, emptyBandOwnerPID}}})
+		usersCollection.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": []int{namedOwnerPID, noBandOwnerPID, emptyBandOwnerPID}}})
+	}()
+
+	req := httptest.NewRequest("GET", "/battle_leaderboard?battle_id=777002", nil)
+	rr := httptest.NewRecorder()
+	restapi.BattleLeaderboardHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	var response map[string][]restapi.BattleLeaderboardEntry
+	decodeResponse(t, rr, &response)
+	leaderboard := response["leaderboard"]
+	if len(leaderboard) != 4 {
+		t.Fatalf("Expected 4 entries, got %d", len(leaderboard))
+	}
+
+	byPID := map[int]string{}
+	for _, entry := range leaderboard {
+		byPID[entry.PID] = entry.Name
+	}
+
+	if byPID[namedOwnerPID] != "Battle Band" {
+		t.Errorf("named band: got %q, want %q", byPID[namedOwnerPID], "Battle Band")
+	}
+	if byPID[noBandOwnerPID] != "battle_noband's Band" {
+		t.Errorf("missing band: got %q, want %q", byPID[noBandOwnerPID], "battle_noband's Band")
+	}
+	if byPID[emptyBandOwnerPID] != "battle_empty's Band" {
+		t.Errorf("empty band name: got %q, want %q", byPID[emptyBandOwnerPID], "battle_empty's Band")
+	}
+	if byPID[orphanOwnerPID] != "Unnamed Band" {
+		t.Errorf("orphan pid: got %q, want %q", byPID[orphanOwnerPID], "Unnamed Band")
+	}
+}
+
 // Tests the list banned players endpoint
 func TestListBannedPlayersHandler(t *testing.T) {
 	rr := makeRequest(t, "GET", "/admin/bans", nil, restapi.ListBannedPlayersHandler)

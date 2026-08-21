@@ -155,6 +155,18 @@ func sendError(w http.ResponseWriter, statusCode int, message string) {
 	sendJSON(w, statusCode, map[string]string{"error": message})
 }
 
+// resolveBandDisplayName mirrors in-game JSON leaderboard naming:
+// band name → "<username>'s Band" → "Unnamed Band".
+func resolveBandDisplayName(bandName, username string) string {
+	if bandName != "" {
+		return bandName
+	}
+	if username != "" {
+		return username + "'s Band"
+	}
+	return "Unnamed Band"
+}
+
 // Handles the health check endpoint to verify if the database is reachable.
 // If somehow the DB has gone down, this will return a 503 Service Unavailable status so clients know that the service is not operational.
 func HealthHandler(w http.ResponseWriter, r *http.Request) {
@@ -481,12 +493,18 @@ func LeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// fetch all names at onnce in a single shot
+	// fetch all names at once in a single shot
 	ctx := context.TODO()
 	bandNameMap, err := database.GetBandNamesByOwnerPIDs(ctx, database.GocentralDatabase, bandPIDs)
 	if err != nil {
 		log.Println("Error fetching band names:", err)
 		bandNameMap = make(map[int]string)
+	}
+
+	bandOwnerUsernames, err := database.GetUsernamesByPIDs(ctx, database.GocentralDatabase, bandPIDs)
+	if err != nil {
+		log.Println("Error fetching band owner usernames:", err)
+		bandOwnerUsernames = make(map[int]string)
 	}
 
 	userNameMap, err := database.GetConsolePrefixedUsernamesByPIDs(ctx, database.GocentralDatabase, userPIDs)
@@ -505,11 +523,7 @@ func LeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		var entryName string
 
 		if isBandScore {
-			if name, ok := bandNameMap[score.OwnerPID]; ok {
-				entryName = name
-			} else {
-				entryName = "Unnamed Band"
-			}
+			entryName = resolveBandDisplayName(bandNameMap[score.OwnerPID], bandOwnerUsernames[score.OwnerPID])
 		} else {
 			if name, ok := userNameMap[score.OwnerPID]; ok {
 				entryName = name
@@ -620,6 +634,12 @@ func BattleLeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		bandNameMap = make(map[int]string)
 	}
 
+	bandOwnerUsernames, err := database.GetUsernamesByPIDs(ctx, database.GocentralDatabase, bandPIDs)
+	if err != nil {
+		log.Println("Error fetching band owner usernames:", err)
+		bandOwnerUsernames = make(map[int]string)
+	}
+
 	userNameMap, err := database.GetConsolePrefixedUsernamesByPIDs(ctx, database.GocentralDatabase, userPIDs)
 	if err != nil {
 		log.Println("Error fetching usernames:", err)
@@ -634,11 +654,7 @@ func BattleLeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		var entryName string
 
 		if isBandScore {
-			if name, ok := bandNameMap[score.OwnerPID]; ok {
-				entryName = name
-			} else {
-				entryName = "Unnamed Band"
-			}
+			entryName = resolveBandDisplayName(bandNameMap[score.OwnerPID], bandOwnerUsernames[score.OwnerPID])
 		} else {
 			if name, ok := userNameMap[score.OwnerPID]; ok {
 				entryName = name
