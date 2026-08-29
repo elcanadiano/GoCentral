@@ -35,6 +35,12 @@ func RequestURLs(err error, client *nex.Client, callID uint32, stationCID uint32
 
 	// check if the user was created by a machine or not
 	if user.CreatedByMachineID == 0 {
+		if !ValidateStationURLs(user.StationURL, user.IntStationURL) {
+			log.Printf("Invalid StationURL for PID %d", stationPID)
+			SendErrorCode(SecureServer, client, nexproto.SecureProtocolID, callID, quazal.OperationError)
+			return
+		}
+
 		if user.IntStationURL != "" {
 			rmcResponseStream.WriteUInt8(1)                         // response code
 			rmcResponseStream.WriteUInt32LE(2)                      // the number of station urls present
@@ -52,6 +58,12 @@ func RequestURLs(err error, client *nex.Client, callID uint32, stationCID uint32
 
 		if err = machines.FindOne(nil, bson.M{"machine_id": user.CreatedByMachineID}).Decode(&machine); err != nil {
 			log.Println("Could not find machine with ID " + fmt.Sprint(user.CreatedByMachineID) + " in database")
+			SendErrorCode(SecureServer, client, nexproto.SecureProtocolID, callID, quazal.OperationError)
+			return
+		}
+
+		if !ValidateStationURLs(machine.StationURL, machine.IntStationURL) {
+			log.Printf("Invalid StationURL for machine %d", user.CreatedByMachineID)
 			SendErrorCode(SecureServer, client, nexproto.SecureProtocolID, callID, quazal.OperationError)
 			return
 		}

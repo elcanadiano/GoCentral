@@ -196,27 +196,7 @@ func main() {
 
 	if enableHousekeeping == "true" {
 		log.Printf("Starting housekeeping tasks...\n")
-
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-
-		// automatically run some housekeeping tasks
-		go func() {
-			for {
-				select {
-				case <-ticker.C:
-					database.CleanupDuplicateScores()
-					database.PruneOldSessions()
-					database.CleanupInvalidScores()
-					database.DeleteExpiredBattles()
-					database.CleanupBannedUserScores()
-					database.CleanupBannedUserAccomplishments()
-					database.CleanupInvalidUsers()
-				case <-quit:
-					return
-				}
-			}
-		}()
+		go runHousekeepingScheduler(quit, configuredHousekeepingJobs())
 	}
 
 	sig := make(chan os.Signal)

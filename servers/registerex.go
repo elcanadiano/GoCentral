@@ -45,6 +45,12 @@ func shouldVerifyTicket(consoleType int) bool {
 var ipRegex = regexp.MustCompile(`(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}`)
 
 func RegisterEx(err error, client *nex.Client, callID uint32, stationUrls []string, className string, ticketData []byte) {
+	if !ValidateStationURLs(stationUrls...) {
+		log.Println("Client supplied an invalid StationURL to RegisterEx")
+		SendErrorCode(SecureServer, client, nexproto.SecureProtocolID, callID, quazal.InvalidArgument)
+		return
+	}
+
 	users := database.GocentralDatabase.Collection("users")
 	machines := database.GocentralDatabase.Collection("machines")
 

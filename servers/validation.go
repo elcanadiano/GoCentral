@@ -9,6 +9,19 @@ import (
 	"github.com/ihatecompvir/nex-go"
 )
 
+const maxStationURLLength = 1024
+
+// ValidateStationURLs does some checks on station URLs on returns whether or not they should be considered valid
+// TODO: verify the correctness and etc. like they must start with prudp:// or prudps:// and what not
+func ValidateStationURLs(stationURLs ...string) bool {
+	for _, stationURL := range stationURLs {
+		if len(stationURL) > maxStationURLLength {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidateClientPID checks if the client has a valid, unbanned non-Master PID
 func ValidateNonMasterClientPID(server *nex.Server, client *nex.Client, callID uint32, protocolId int) (bool, error) {
 	// Check that the claimed PID has logged in

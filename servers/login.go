@@ -314,6 +314,11 @@ func Login(err error, client *nex.Client, callID uint32, username string) {
 	}
 
 	stationURL := fmt.Sprintf("prudps:/address=%s;port=%s;CID=1;PID=2;sid=1;stream=3;type=2", os.Getenv("ADDRESS"), os.Getenv("SECUREPORT"))
+	if !ValidateStationURLs(stationURL) {
+		log.Println("Secure server StationURL is invalid")
+		SendErrorCode(AuthServer, client, nexproto.AuthenticationProtocolID, callID, quazal.OperationError)
+		return
+	}
 
 	rmcResponseStream := nex.NewStream()
 	rmcResponseStream.Grow(int64(23))

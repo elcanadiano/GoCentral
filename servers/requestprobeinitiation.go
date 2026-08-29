@@ -33,6 +33,19 @@ func RequestProbeInitiation(err error, client *nex.Client, callID uint32, statio
 		return
 	}
 
+	if !ValidateStationURLs(stationURLs...) {
+		log.Println("Client supplied an invalid StationURL to RequestProbeInitiation")
+		SendErrorCode(SecureServer, client, nexproto.NATTraversalProtocolID, callID, quazal.InvalidArgument)
+		return
+	}
+
+	clientStationURL := client.ExternalStationURL()
+	if !ValidateStationURLs(clientStationURL) {
+		log.Println("Client has an invalid StationURL during NAT traversal")
+		SendErrorCode(SecureServer, client, nexproto.NATTraversalProtocolID, callID, quazal.OperationError)
+		return
+	}
+
 	rmcResponseStream := nex.NewStream()
 
 	rmcResponseBody := rmcResponseStream.Bytes()
@@ -57,7 +70,7 @@ func RequestProbeInitiation(err error, client *nex.Client, callID uint32, statio
 	rmcMessage.SetCallID(callID)
 	rmcMessage.SetMethodID(nexproto.InitiateProbe)
 	rmcRequestStream := nex.NewStreamOut(SecureServer)
-	rmcRequestStream.WriteBufferString(client.ExternalStationURL())
+	rmcRequestStream.WriteBufferString(clientStationURL)
 	rmcRequestBody := rmcRequestStream.Bytes()
 	rmcMessage.SetParameters(rmcRequestBody)
 	rmcMessageBytes := rmcMessage.Bytes()

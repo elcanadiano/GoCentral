@@ -488,6 +488,11 @@ func LeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Error fetching band names:", err)
 		bandNameMap = make(map[int]string)
 	}
+	bandOwnerNameMap, err := database.GetUsernamesByPIDs(ctx, database.GocentralDatabase, bandPIDs)
+	if err != nil {
+		log.Println("Error fetching band owner usernames:", err)
+		bandOwnerNameMap = make(map[int]string)
+	}
 
 	userNameMap, err := database.GetConsolePrefixedUsernamesByPIDs(ctx, database.GocentralDatabase, userPIDs)
 	if err != nil {
@@ -505,10 +510,12 @@ func LeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		var entryName string
 
 		if isBandScore {
-			if name, ok := bandNameMap[score.OwnerPID]; ok {
-				entryName = name
-			} else {
+			entryName = bandNameMap[score.OwnerPID]
+			if entryName == "" {
 				entryName = "Unnamed Band"
+				if ownerName := bandOwnerNameMap[score.OwnerPID]; ownerName != "" {
+					entryName = ownerName + "'s Band"
+				}
 			}
 		} else {
 			if name, ok := userNameMap[score.OwnerPID]; ok {
@@ -619,6 +626,11 @@ func BattleLeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Error fetching band names:", err)
 		bandNameMap = make(map[int]string)
 	}
+	bandOwnerNameMap, err := database.GetUsernamesByPIDs(ctx, database.GocentralDatabase, bandPIDs)
+	if err != nil {
+		log.Println("Error fetching band owner usernames:", err)
+		bandOwnerNameMap = make(map[int]string)
+	}
 
 	userNameMap, err := database.GetConsolePrefixedUsernamesByPIDs(ctx, database.GocentralDatabase, userPIDs)
 	if err != nil {
@@ -634,10 +646,12 @@ func BattleLeaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		var entryName string
 
 		if isBandScore {
-			if name, ok := bandNameMap[score.OwnerPID]; ok {
-				entryName = name
-			} else {
+			entryName = bandNameMap[score.OwnerPID]
+			if entryName == "" {
 				entryName = "Unnamed Band"
+				if ownerName := bandOwnerNameMap[score.OwnerPID]; ownerName != "" {
+					entryName = ownerName + "'s Band"
+				}
 			}
 		} else {
 			if name, ok := userNameMap[score.OwnerPID]; ok {
