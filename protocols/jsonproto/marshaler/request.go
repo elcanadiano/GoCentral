@@ -66,6 +66,10 @@ func UnmarshalRequest(data string, out interface{}) error {
 					if v, ok := value.(float64); ok {
 						fieldValue.SetInt(int64(v))
 					}
+				case reflect.Float32, reflect.Float64:
+					if v, ok := value.(float64); ok {
+						fieldValue.SetFloat(v)
+					}
 				case reflect.String:
 					if v, ok := value.(string); ok {
 						fieldValue.SetString(v)

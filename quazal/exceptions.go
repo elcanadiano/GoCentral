@@ -13,8 +13,8 @@ const (
 	AccountDisabled                   = 0x00030067
 	InvalidUsername                   = 0x00030064
 	NotAuthenticated                  = 0x00030002
-	InvalidPassword                   = 0x00030066
-	UsernameAlreadyExists             = 0x00030068
+	InvalidPassword                   = 0x00030065
+	UsernameAlreadyExists             = 0x00030066
 	InvalidPID                        = 0x0003006B
 	ConcurrentLoginDenied             = 0x00030069
 	AccountExpired                    = 0x00030068

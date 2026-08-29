@@ -32,12 +32,12 @@ type PerformanceRecordRequest struct {
 	HitStreakStart                             int     `json:"hit_streak_start"`
 	HitStreakDuration                          int     `json:"hit_streak_duration"`
 	EndGameOverdrive                           float32 `json:"end_game_overdrive"`
-	EndGameCrowdLevel                          float32 `json:"end_game_crowd_level"`
+	EndGameCrowdLevel                          float32 `json:"end_game_crowdlevel"`
 	CodaPoints                                 int     `json:"coda_points"`
 	ODPhrasesCompleted                         int     `json:"od_phrases_completed"`
-	ODPhrasesCount                             int     `json:"od_phrases_count"`
+	ODPhraseCount                              int     `json:"od_phrase_count"`
 	UnisonPhrasesCompleted                     int     `json:"unison_phrases_completed"`
-	UnisonPhrasesCount                         int     `json:"unison_phrases_count"`
+	UnisonPhraseCount                          int     `json:"unison_phrase_count"`
 	AverageMSError                             float32 `json:"average_ms_error"`
 	FailurePoint000                            float32 `json:"failure_point000"`
 	FailurePoint001                            float32 `json:"failure_point001"`
@@ -149,11 +149,11 @@ func (service PerformanceRecordService) Path() string {
 }
 
 func (service PerformanceRecordService) Handle(data string, database *mongo.Database, client *nex.Client) (string, error) {
-	//var req PerformanceRecordRequest
-	//err := marshaler.UnmarshalRequest(data, &req)
-	//if err != nil {
-	//	return "", err
-	//}
+	var req PerformanceRecordRequest
+	err := marshaler.UnmarshalRequest(data, &req)
+	if err != nil {
+		return "", err
+	}
 
 	res := []PerformanceRecordResponse{{
 		1,

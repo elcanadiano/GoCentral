@@ -97,6 +97,8 @@ func OnConnection(packet *nex.PacketV0) {
 }
 
 func SendErrorCode(server *nex.Server, client *nex.Client, protocol uint8, callID uint32, code uint32) {
+	code |= 0x80000000
+
 	rmcResponse := nex.NewRMCResponse(protocol, callID)
 	rmcResponse.SetError(code)
 

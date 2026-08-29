@@ -68,7 +68,9 @@ func (mgr *ServicesManager) registerAll() {
 
 	// entities
 	mgr.register(character.CharacterUpdateService{})
+	mgr.register(character.CharacterNameCheckService{})
 	mgr.register(band.BandUpdateService{})
+	mgr.register(band.BandNameCheckService{})
 	mgr.register(entities.GetLinkcodeService{})
 
 	// performance

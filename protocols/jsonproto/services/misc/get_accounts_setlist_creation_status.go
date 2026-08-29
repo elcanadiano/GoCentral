@@ -1,10 +1,12 @@
 package misc
 
 import (
+	"context"
 	"log"
 	"rb3server/protocols/jsonproto/marshaler"
 
 	"github.com/ihatecompvir/nex-go"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -40,9 +42,21 @@ func (service SetlistCreationStatusService) Handle(data string, database *mongo.
 		return "", err
 	}
 
+	setlistsCollection := database.Collection("setlists")
+	count, err := setlistsCollection.CountDocuments(context.TODO(), bson.M{"pid": req.PID, "type": bson.M{"$nin": []int{1000, 1001, 1002}}})
+	if err != nil {
+		log.Printf("Could not count setlists for PID %d: %v\n", req.PID, err)
+		return "", err
+	}
+
+	creator := 0
+	if count > 0 {
+		creator = 1
+	}
+
 	res := []SetlistCreationStatusResponse{{
 		req.PID,
-		0,
+		creator,
 	}}
 
 	return marshaler.MarshalResponse(service.Path(), res)

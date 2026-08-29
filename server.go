@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
 	"github.com/natefinch/lumberjack"
 	"go.mongodb.org/mongo-driver/bson"
@@ -69,7 +71,9 @@ func main() {
 	}
 
 	defer func() {
-		if err = client.Disconnect(ctx); err != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err = client.Disconnect(shutdownCtx); err != nil {
 			log.Fatalln("Could not connect to MongoDB: ", err)
 		}
 	}()
@@ -120,21 +124,20 @@ func main() {
 	go servers.StartAuthServer()
 	go servers.StartSecureServer()
 
-	debugNetwork := os.Getenv("DEBUGNETWORK")
-
-	if debugNetwork == "1" {
+	if envTrue(os.Getenv("DEBUGNETWORK")) {
 		// only enable for secure server now since that's the one that has the most complex network interactions, and the auth server is pretty straightforward
 		// TODO: have a way to enable debug network for the auth server as well, cba right now
 		servers.SecureServer.SetDebugNetwork(true)
 	}
 
 	// Start HTTP server using Chi
-	enableRESTAPI := os.Getenv("ENABLERESTAPI")
+	enableRESTAPI := envTrue(os.Getenv("ENABLERESTAPI"))
 
 	httpServer := &http.Server{}
 
-	if enableRESTAPI == "1" {
+	if enableRESTAPI {
 		r := chi.NewRouter()
+		r.Use(middleware.Recoverer)
 
 		// used to check if the server is up
 		r.Get("/health", restapi.HealthHandler)
@@ -190,13 +193,16 @@ func main() {
 		log.Println("GoCentral REST API HTTP server started on:" + httpPort)
 	}
 
-	enableHousekeeping := os.Getenv("ENABLEHOUSEKEEPING")
-
+	enableHousekeeping := envTrue(os.Getenv("ENABLEHOUSEKEEPING"))
+	housekeepingLeaderValue, housekeepingLeaderSet := os.LookupEnv("HOUSEKEEPING_LEADER")
+	shouldRunHousekeeping := enableHousekeeping && (!housekeepingLeaderSet || envTrue(housekeepingLeaderValue))
 	quit := make(chan struct{})
 
-	if enableHousekeeping == "true" {
+	if shouldRunHousekeeping {
 		log.Printf("Starting housekeeping tasks...\n")
 		go runHousekeepingScheduler(quit, configuredHousekeepingJobs())
+	} else if enableHousekeeping {
+		log.Println("Housekeeping enabled but skipped on this instance because HOUSEKEEPING_LEADER is false")
 	}
 
 	sig := make(chan os.Signal)
@@ -207,7 +213,7 @@ func main() {
 	// Stop the message store purge loop
 	servers.StopMessageStore()
 
-	if enableRESTAPI == "true" {
+	if enableRESTAPI {
 		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(ctx); err != nil {
@@ -215,4 +221,13 @@ func main() {
 		}
 	}
 	close(quit)
+}
+
+func envTrue(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
