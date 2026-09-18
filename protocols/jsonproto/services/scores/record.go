@@ -159,9 +159,9 @@ func (service ScoreRecordService) Handle(data string, database *mongo.Database, 
 
 		// Retrieve the existing score
 		var existingScore models.Score
-		err := scoresCollection.FindOne(context.TODO(), bson.M{"song_id": req.SongID, "pid": Score.OwnerPID, "role_id": Score.RoleID}).Decode(&existingScore)
+		findErr := scoresCollection.FindOne(context.TODO(), bson.M{"song_id": req.SongID, "pid": Score.OwnerPID, "role_id": Score.RoleID}).Decode(&existingScore)
 
-		isNewScoreHigher := err == mongo.ErrNoDocuments || Score.Score > existingScore.Score
+		isNewScoreHigher := findErr == mongo.ErrNoDocuments || Score.Score > existingScore.Score
 		scoreHigher[idx] = isNewScoreHigher
 
 		// Only update if the new score is higher
@@ -184,6 +184,19 @@ func (service ScoreRecordService) Handle(data string, database *mongo.Database, 
 				},
 				options.Update().SetUpsert(true),
 			)
+			if err != nil {
+				log.Printf("Failed to upsert score for pid %d song %d role %d: %v\n", Score.OwnerPID, Score.SongID, Score.RoleID, err)
+				continue
+			}
+
+			oldScore := 0
+			if findErr != mongo.ErrNoDocuments {
+				oldScore = existingScore.Score
+			}
+			delta := Score.Score - oldScore
+			if err := db.ApplyRoleRankScoreDelta(context.TODO(), database, Score.OwnerPID, Score.RoleID, delta, db.IsRB3OnDiscSong(Score.SongID)); err != nil {
+				log.Printf("Failed to apply role_rank delta for pid %d role %d: %v\n", Score.OwnerPID, Score.RoleID, err)
+			}
 
 			currentScore[idx] = Score.Score
 		} else {
