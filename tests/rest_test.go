@@ -9,6 +9,8 @@ import (
 	"rb3server/database"
 	"rb3server/models"
 	"rb3server/restapi"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -407,6 +409,182 @@ func TestBattleLeaderboardHandler_MissingBattleID(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("Expected status 400, got %d", rr.Code)
 	}
+}
+
+func TestRoleRankLegacyHandler_Validation(t *testing.T) {
+	testCases := []struct {
+		name  string
+		query string
+	}{
+		{"Missing role_id", "/leaderboards/role-rank/legacy"},
+		{"Invalid role_id", "/leaderboards/role-rank/legacy?role_id=abc"},
+		{"Invalid page", "/leaderboards/role-rank/legacy?role_id=1&page=0"},
+		{"Invalid page_size", "/leaderboards/role-rank/legacy?role_id=1&page_size=101"},
+		{"Invalid pid", "/leaderboards/role-rank/legacy?role_id=1&pid=xyz"},
+		{"Invalid rb3_only", "/leaderboards/role-rank/legacy?role_id=1&rb3_only=maybe"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.query, nil)
+			rr := httptest.NewRecorder()
+			restapi.RoleRankLegacyHandler(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("Expected status 400, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestRoleRankLegacyHandler_PaginationAndExclusions(t *testing.T) {
+	ctx := context.Background()
+	scoresCollection := database.GocentralDatabase.Collection("scores")
+	usersCollection := database.GocentralDatabase.Collection("users")
+
+	roleID := 7
+	// Use high unique PIDs to avoid colliding with seed data
+	basePID := 880100
+
+	users := []struct {
+		pid  int
+		name string
+	}{
+		{basePID, "rr_alice"},
+		{basePID + 1, "rr_bob"},
+		{basePID + 2, "rr_carol"},
+		{basePID + 3, "rr_dave"},
+		{basePID + 4, "rr_erin"},
+	}
+	for _, u := range users {
+		usersCollection.InsertOne(ctx, map[string]interface{}{
+			"pid": u.pid, "username": u.name, "console_type": 1,
+		})
+	}
+
+	// Totals for role 7 (non-battle): alice 300, bob 200, carol 100, dave 50, erin 25
+	// plus a battle score and setlist score that must not count, and a DLC-only score for rb3_only tests
+	scoreDocs := []map[string]interface{}{
+		{"pid": basePID, "song_id": 1050, "role_id": roleID, "score": 300, "stars": 5, "diff_id": 2, "notespct": 95},
+		{"pid": basePID + 1, "song_id": 1050, "role_id": roleID, "score": 200, "stars": 5, "diff_id": 2, "notespct": 95},
+		{"pid": basePID + 2, "song_id": 1050, "role_id": roleID, "score": 100, "stars": 5, "diff_id": 2, "notespct": 95},
+		{"pid": basePID + 3, "song_id": 1050, "role_id": roleID, "score": 50, "stars": 5, "diff_id": 2, "notespct": 95},
+		{"pid": basePID + 4, "song_id": 1050, "role_id": roleID, "score": 25, "stars": 5, "diff_id": 2, "notespct": 95},
+		// should be ignored (battle / setlist)
+		{"pid": basePID, "song_id": 1050, "role_id": roleID, "score": 99999, "battle_id": 12345, "stars": 5, "diff_id": 2, "notespct": 95},
+		{"pid": basePID + 1, "song_id": 1050, "role_id": roleID, "score": 99999, "setlist_id": 67890, "stars": 5, "diff_id": 2, "notespct": 95},
+		// DLC song outside RB3 on-disc range — counts for default board, not rb3_only
+		{"pid": basePID + 2, "song_id": 2000, "role_id": roleID, "score": 500, "stars": 5, "diff_id": 2, "notespct": 95},
+	}
+	for _, doc := range scoreDocs {
+		scoresCollection.InsertOne(ctx, doc)
+	}
+
+	defer func() {
+		pids := []int{basePID, basePID + 1, basePID + 2, basePID + 3, basePID + 4}
+		scoresCollection.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}, "role_id": roleID})
+		usersCollection.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}})
+	}()
+
+	t.Run("absolute page 1", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank/legacy?role_id=7&page=1&page_size=2", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankLegacyHandler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("Expected 200, got %d (%s)", rr.Code, rr.Body.String())
+		}
+		var response map[string][]restapi.RoleRankLegacyEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		if len(lb) != 2 {
+			t.Fatalf("Expected 2 entries, got %d", len(lb))
+		}
+		// carol has 100+500=600 from disc+DLC, so rank 1; alice 300 rank 2
+		if lb[0].PID != basePID+2 || lb[0].Rank != 1 || lb[0].TotalScore != 600 {
+			t.Errorf("rank1: got pid=%d score=%d rank=%d", lb[0].PID, lb[0].TotalScore, lb[0].Rank)
+		}
+		if lb[1].PID != basePID || lb[1].Rank != 2 || lb[1].TotalScore != 300 {
+			t.Errorf("rank2: got pid=%d score=%d rank=%d", lb[1].PID, lb[1].TotalScore, lb[1].Rank)
+		}
+		if !strings.Contains(lb[0].Name, "rr_carol") {
+			t.Errorf("expected console-prefixed carol name, got %q", lb[0].Name)
+		}
+	})
+
+	t.Run("absolute page 2", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank/legacy?role_id=7&page=2&page_size=2", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankLegacyHandler(rr, req)
+		var response map[string][]restapi.RoleRankLegacyEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		if len(lb) != 2 {
+			t.Fatalf("Expected 2 entries, got %d", len(lb))
+		}
+		if lb[0].Rank != 3 || lb[1].Rank != 4 {
+			t.Errorf("expected ranks 3 and 4, got %d and %d", lb[0].Rank, lb[1].Rank)
+		}
+	})
+
+	t.Run("pid centered page", func(t *testing.T) {
+		davePID := basePID + 3
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank/legacy?role_id=7&pid="+strconv.Itoa(davePID)+"&page_size=2&page=99", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankLegacyHandler(rr, req)
+		var response map[string][]restapi.RoleRankLegacyEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		found := false
+		for _, e := range lb {
+			if e.PID == davePID {
+				found = true
+				// Order: carol 600, alice 300, bob 200, dave 50, erin 25 → dave rank 4
+				// page_size 2 → window start rank 3 (ranks 3-4)
+				if e.Rank != 4 {
+					t.Errorf("dave rank: got %d want 4", e.Rank)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expected dave on page, got %+v", lb)
+		}
+		if len(lb) != 2 || lb[0].Rank != 3 {
+			t.Errorf("expected window starting at rank 3, got %+v", lb)
+		}
+	})
+
+	t.Run("rb3_only excludes DLC song", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank/legacy?role_id=7&rb3_only=1&page=1&page_size=5", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankLegacyHandler(rr, req)
+		var response map[string][]restapi.RoleRankLegacyEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		if len(lb) < 1 {
+			t.Fatal("expected entries")
+		}
+		// Without DLC, alice 300 is #1; carol only has 100 on-disc
+		if lb[0].PID != basePID || lb[0].TotalScore != 300 {
+			t.Errorf("rb3_only rank1: got pid=%d score=%d", lb[0].PID, lb[0].TotalScore)
+		}
+		for _, e := range lb {
+			if e.PID == basePID+2 && e.TotalScore != 100 {
+				t.Errorf("carol rb3_only total should be 100, got %d", e.TotalScore)
+			}
+		}
+	})
+
+	t.Run("unscored pid returns last page", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank/legacy?role_id=7&pid=999999001&page_size=2", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankLegacyHandler(rr, req)
+		var response map[string][]restapi.RoleRankLegacyEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		// 5 players, page_size 2 → last page has 1 entry (rank 5)
+		if len(lb) != 1 || lb[0].Rank != 5 {
+			t.Errorf("expected last page with rank 5, got %+v", lb)
+		}
+	})
 }
 
 // Tests the list banned players endpoint

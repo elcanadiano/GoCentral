@@ -168,6 +168,7 @@ func main() {
 
 		r.Get("/leaderboards/song", restapi.LeaderboardHandler)
 		r.Get("/leaderboards/battle", restapi.BattleLeaderboardHandler)
+		r.Get("/leaderboards/role-rank/legacy", restapi.RoleRankLegacyHandler)
 
 		r.Get("/battles", restapi.BattleListHandler)
 
