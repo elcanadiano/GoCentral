@@ -1,6 +1,7 @@
 package restapi
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strconv"
@@ -11,13 +12,16 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// RoleRankLegacyEntry is one row on the legacy role-rank leaderboard.
-type RoleRankLegacyEntry struct {
+// RoleRankEntry is one row on a role-rank leaderboard (legacy or materialized).
+type RoleRankEntry struct {
 	PID        int    `json:"pid"`
 	Name       string `json:"name"`
 	TotalScore int    `json:"total_score"`
 	Rank       int    `json:"rank"`
 }
+
+// RoleRankLegacyEntry is kept for existing tests and callers.
+type RoleRankLegacyEntry = RoleRankEntry
 
 func parseOptionalBoolQuery(raw string) (value bool, ok bool) {
 	if raw == "" {
@@ -33,20 +37,14 @@ func parseOptionalBoolQuery(raw string) (value bool, ok bool) {
 	}
 }
 
-// RoleRankLegacyHandler serves GET /leaderboards/role-rank/legacy.
-func RoleRankLegacyHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	AddStandardHeaders(w)
-
+func parseRoleRankQuery(r *http.Request) (database.RoleRankPageOptions, error) {
 	roleIDStr := r.URL.Query().Get("role_id")
 	if roleIDStr == "" {
-		sendError(w, http.StatusBadRequest, "role_id is required")
-		return
+		return database.RoleRankPageOptions{}, errRoleRankBadRequest("role_id is required")
 	}
 	roleID, err := strconv.Atoi(roleIDStr)
 	if err != nil {
-		sendError(w, http.StatusBadRequest, "Invalid role_id")
-		return
+		return database.RoleRankPageOptions{}, errRoleRankBadRequest("Invalid role_id")
 	}
 
 	page := 1
@@ -54,8 +52,7 @@ func RoleRankLegacyHandler(w http.ResponseWriter, r *http.Request) {
 	if pageStr != "" {
 		page, err = strconv.Atoi(pageStr)
 		if err != nil || page < 1 {
-			sendError(w, http.StatusBadRequest, "Invalid page number")
-			return
+			return database.RoleRankPageOptions{}, errRoleRankBadRequest("Invalid page number")
 		}
 	}
 
@@ -64,8 +61,7 @@ func RoleRankLegacyHandler(w http.ResponseWriter, r *http.Request) {
 	if pageSizeStr != "" {
 		pageSize, err = strconv.Atoi(pageSizeStr)
 		if err != nil || pageSize < 1 || pageSize > 100 {
-			sendError(w, http.StatusBadRequest, "Invalid page_size")
-			return
+			return database.RoleRankPageOptions{}, errRoleRankBadRequest("Invalid page_size")
 		}
 	}
 
@@ -74,44 +70,42 @@ func RoleRankLegacyHandler(w http.ResponseWriter, r *http.Request) {
 	if pidStr != "" {
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil {
-			sendError(w, http.StatusBadRequest, "Invalid pid")
-			return
+			return database.RoleRankPageOptions{}, errRoleRankBadRequest("Invalid pid")
 		}
 		pidPtr = &pid
 	}
 
 	rb3Only, ok := parseOptionalBoolQuery(r.URL.Query().Get("rb3_only"))
 	if !ok {
-		sendError(w, http.StatusBadRequest, "Invalid rb3_only")
-		return
+		return database.RoleRankPageOptions{}, errRoleRankBadRequest("Invalid rb3_only")
 	}
 
-	opts := database.RoleRankLegacyPageOptions{
+	return database.RoleRankPageOptions{
 		RoleID:   roleID,
 		Page:     page,
 		PageSize: pageSize,
 		PID:      pidPtr,
 		RB3Only:  rb3Only,
-	}
+	}, nil
+}
 
-	entries, err := database.GetRoleRankLegacyPage(r.Context(), database.GocentralDatabase, opts)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			sendJSON(w, http.StatusOK, map[string][]RoleRankLegacyEntry{"leaderboard": {}})
-			return
-		}
-		log.Printf("ERROR: role-rank legacy query failed: %v", err)
-		sendError(w, http.StatusInternalServerError, "Failed to query role rank leaderboard")
-		return
-	}
+type roleRankBadRequest struct {
+	msg string
+}
 
+func (e roleRankBadRequest) Error() string { return e.msg }
+
+func errRoleRankBadRequest(msg string) error {
+	return roleRankBadRequest{msg: msg}
+}
+
+func resolveRoleRankNames(ctx context.Context, roleID int, entries []database.RoleTotalEntry) []RoleRankEntry {
 	pids := make([]int, 0, len(entries))
 	for _, e := range entries {
 		pids = append(pids, e.PID)
 	}
 
-	ctx := r.Context()
-	var leaderboard []RoleRankLegacyEntry
+	leaderboard := make([]RoleRankEntry, 0, len(entries))
 
 	if roleID == 10 {
 		bandNameMap, err := database.GetBandNamesByOwnerPIDs(ctx, database.GocentralDatabase, pids)
@@ -133,36 +127,75 @@ func RoleRankLegacyHandler(w http.ResponseWriter, r *http.Request) {
 					name = ownerName + "'s Band"
 				}
 			}
-			leaderboard = append(leaderboard, RoleRankLegacyEntry{
+			leaderboard = append(leaderboard, RoleRankEntry{
 				PID:        e.PID,
 				Name:       name,
 				TotalScore: e.TotalScore,
 				Rank:       e.Rank,
 			})
 		}
-	} else {
-		userNameMap, err := database.GetConsolePrefixedUsernamesByPIDs(ctx, database.GocentralDatabase, pids)
-		if err != nil {
-			log.Println("Error fetching usernames:", err)
-			userNameMap = make(map[int]string)
-		}
-
-		for _, e := range entries {
-			name := "Unnamed Player"
-			if n, ok := userNameMap[e.PID]; ok && n != "" {
-				name = n
-			}
-			leaderboard = append(leaderboard, RoleRankLegacyEntry{
-				PID:        e.PID,
-				Name:       name,
-				TotalScore: e.TotalScore,
-				Rank:       e.Rank,
-			})
-		}
+		return leaderboard
 	}
 
+	userNameMap, err := database.GetConsolePrefixedUsernamesByPIDs(ctx, database.GocentralDatabase, pids)
+	if err != nil {
+		log.Println("Error fetching usernames:", err)
+		userNameMap = make(map[int]string)
+	}
+
+	for _, e := range entries {
+		name := "Unnamed Player"
+		if n, ok := userNameMap[e.PID]; ok && n != "" {
+			name = n
+		}
+		leaderboard = append(leaderboard, RoleRankEntry{
+			PID:        e.PID,
+			Name:       name,
+			TotalScore: e.TotalScore,
+			Rank:       e.Rank,
+		})
+	}
+	return leaderboard
+}
+
+func serveRoleRankLeaderboard(w http.ResponseWriter, r *http.Request, fetch func(context.Context, database.RoleRankPageOptions) ([]database.RoleTotalEntry, error), errLabel string) {
+	w.Header().Set("Content-Type", "application/json")
+	AddStandardHeaders(w)
+
+	opts, err := parseRoleRankQuery(r)
+	if err != nil {
+		sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	entries, err := fetch(r.Context(), opts)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			sendJSON(w, http.StatusOK, map[string][]RoleRankEntry{"leaderboard": {}})
+			return
+		}
+		log.Printf("ERROR: %s query failed: %v", errLabel, err)
+		sendError(w, http.StatusInternalServerError, "Failed to query role rank leaderboard")
+		return
+	}
+
+	leaderboard := resolveRoleRankNames(r.Context(), opts.RoleID, entries)
 	if leaderboard == nil {
-		leaderboard = []RoleRankLegacyEntry{}
+		leaderboard = []RoleRankEntry{}
 	}
-	sendJSON(w, http.StatusOK, map[string][]RoleRankLegacyEntry{"leaderboard": leaderboard})
+	sendJSON(w, http.StatusOK, map[string][]RoleRankEntry{"leaderboard": leaderboard})
+}
+
+// RoleRankHandler serves GET /leaderboards/role-rank from the materialized role_ranks collection.
+func RoleRankHandler(w http.ResponseWriter, r *http.Request) {
+	serveRoleRankLeaderboard(w, r, func(ctx context.Context, opts database.RoleRankPageOptions) ([]database.RoleTotalEntry, error) {
+		return database.GetRoleRankPage(ctx, database.GocentralDatabase, opts)
+	}, "role-rank")
+}
+
+// RoleRankLegacyHandler serves GET /leaderboards/role-rank/legacy via live score aggregation.
+func RoleRankLegacyHandler(w http.ResponseWriter, r *http.Request) {
+	serveRoleRankLeaderboard(w, r, func(ctx context.Context, opts database.RoleRankPageOptions) ([]database.RoleTotalEntry, error) {
+		return database.GetRoleRankLegacyPage(ctx, database.GocentralDatabase, opts)
+	}, "role-rank legacy")
 }

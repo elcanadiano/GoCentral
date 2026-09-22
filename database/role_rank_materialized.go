@@ -172,3 +172,104 @@ func RebuildRoleRanks(ctx context.Context, db *mongo.Database) (int, error) {
 
 	return total, nil
 }
+
+func roleRankScoreField(rb3Only bool) string {
+	if rb3Only {
+		return "rb3_score"
+	}
+	return "total_score"
+}
+
+func roleRankPageFilter(roleID int, rb3Only bool) bson.M {
+	filter := bson.M{"role_id": roleID}
+	if rb3Only {
+		filter["rb3_score"] = bson.M{"$gt": 0}
+	}
+	return filter
+}
+
+func roleRankPlayerScore(row models.RoleRank, rb3Only bool) (score int, onBoard bool) {
+	if rb3Only {
+		if row.RB3Score <= 0 {
+			return 0, false
+		}
+		return row.RB3Score, true
+	}
+	return row.TotalScore, true
+}
+
+// GetRoleRankPage returns a page of per-role rankings from the materialized role_ranks collection.
+func GetRoleRankPage(ctx context.Context, db *mongo.Database, opts RoleRankPageOptions) ([]RoleTotalEntry, error) {
+	if opts.PageSize < 1 {
+		opts.PageSize = 20
+	}
+	if opts.Page < 1 {
+		opts.Page = 1
+	}
+
+	coll := db.Collection(RoleRanksCollectionName)
+	filter := roleRankPageFilter(opts.RoleID, opts.RB3Only)
+	scoreField := roleRankScoreField(opts.RB3Only)
+
+	var skip int64
+	if opts.PID != nil {
+		row, found, err := GetRoleRank(ctx, db, *opts.PID, opts.RoleID)
+		if err != nil {
+			return nil, err
+		}
+		playerScore, onBoard := roleRankPlayerScore(row, opts.RB3Only)
+		if !found || !onBoard {
+			total, err := coll.CountDocuments(ctx, filter)
+			if err != nil {
+				return nil, err
+			}
+			if total == 0 {
+				return []RoleTotalEntry{}, nil
+			}
+			skip = ((total - 1) / int64(opts.PageSize)) * int64(opts.PageSize)
+		} else {
+			higherFilter := bson.M{}
+			for k, v := range filter {
+				higherFilter[k] = v
+			}
+			higherFilter[scoreField] = bson.M{"$gt": playerScore}
+			higher, err := coll.CountDocuments(ctx, higherFilter)
+			if err != nil {
+				return nil, err
+			}
+			rank0 := higher
+			skip = rank0 - (rank0 % int64(opts.PageSize))
+		}
+	} else {
+		skip = int64((opts.Page - 1) * opts.PageSize)
+	}
+
+	limit := int64(opts.PageSize)
+	cursor, err := coll.Find(ctx, filter, &options.FindOptions{
+		Skip:  &skip,
+		Limit: &limit,
+		Sort:  bson.D{{Key: scoreField, Value: -1}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var rows []models.RoleRank
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+
+	entries := make([]RoleTotalEntry, 0, len(rows))
+	rank := int(skip) + 1
+	for _, row := range rows {
+		score, _ := roleRankPlayerScore(row, opts.RB3Only)
+		entries = append(entries, RoleTotalEntry{
+			PID:        row.PID,
+			TotalScore: score,
+			Rank:       rank,
+		})
+		rank++
+	}
+	return entries, nil
+}

@@ -14,14 +14,17 @@ type RoleTotalEntry struct {
 	Rank       int
 }
 
-// RoleRankLegacyPageOptions controls GET /leaderboards/role-rank/legacy aggregation.
-type RoleRankLegacyPageOptions struct {
+// RoleRankPageOptions controls role-rank leaderboard paging (legacy and materialized).
+type RoleRankPageOptions struct {
 	RoleID   int
 	Page     int  // 1-based; ignored when PID is set
 	PageSize int
 	PID      *int // when set, return the page window containing this player
 	RB3Only  bool
 }
+
+// RoleRankLegacyPageOptions is kept as an alias for callers of the live aggregation path.
+type RoleRankLegacyPageOptions = RoleRankPageOptions
 
 func roleTotalsMatch(roleID int, rb3Only bool) bson.D {
 	match := bson.D{

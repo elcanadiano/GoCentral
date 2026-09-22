@@ -587,6 +587,250 @@ func TestRoleRankLegacyHandler_PaginationAndExclusions(t *testing.T) {
 	})
 }
 
+func TestRoleRankHandler_Validation(t *testing.T) {
+	testCases := []struct {
+		name  string
+		query string
+	}{
+		{"Missing role_id", "/leaderboards/role-rank"},
+		{"Invalid role_id", "/leaderboards/role-rank?role_id=abc"},
+		{"Invalid page", "/leaderboards/role-rank?role_id=1&page=0"},
+		{"Invalid page_size", "/leaderboards/role-rank?role_id=1&page_size=101"},
+		{"Invalid pid", "/leaderboards/role-rank?role_id=1&pid=xyz"},
+		{"Invalid rb3_only", "/leaderboards/role-rank?role_id=1&rb3_only=maybe"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.query, nil)
+			rr := httptest.NewRecorder()
+			restapi.RoleRankHandler(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("Expected status 400, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestRoleRankHandler_PaginationAndRB3(t *testing.T) {
+	ctx := context.Background()
+	roleRanks := database.GocentralDatabase.Collection(database.RoleRanksCollectionName)
+	usersCollection := database.GocentralDatabase.Collection("users")
+
+	roleID := 6
+	basePID := 883100
+
+	pids := []int{basePID, basePID + 1, basePID + 2, basePID + 3, basePID + 4}
+	roleRanks.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}, "role_id": roleID})
+	usersCollection.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}})
+
+	if err := database.EnsureRoleRankIndexes(ctx, database.GocentralDatabase); err != nil {
+		t.Fatalf("EnsureRoleRankIndexes: %v", err)
+	}
+
+	users := []struct {
+		pid  int
+		name string
+	}{
+		{basePID, "mrr_alice"},
+		{basePID + 1, "mrr_bob"},
+		{basePID + 2, "mrr_carol"},
+		{basePID + 3, "mrr_dave"},
+		{basePID + 4, "mrr_erin"},
+	}
+	for _, u := range users {
+		usersCollection.InsertOne(ctx, map[string]interface{}{
+			"pid": u.pid, "username": u.name, "console_type": 1,
+		})
+	}
+
+	// carol 600 total (100 rb3 + 500 dlc tracked as rb3=100), alice 300/300, bob 200/200, dave 50/50, erin 25/25
+	rankDocs := []interface{}{
+		models.RoleRank{PID: basePID, RoleID: roleID, TotalScore: 300, RB3Score: 300},
+		models.RoleRank{PID: basePID + 1, RoleID: roleID, TotalScore: 200, RB3Score: 200},
+		models.RoleRank{PID: basePID + 2, RoleID: roleID, TotalScore: 600, RB3Score: 100},
+		models.RoleRank{PID: basePID + 3, RoleID: roleID, TotalScore: 50, RB3Score: 50},
+		models.RoleRank{PID: basePID + 4, RoleID: roleID, TotalScore: 25, RB3Score: 25},
+	}
+	if _, err := roleRanks.InsertMany(ctx, rankDocs); err != nil {
+		t.Fatalf("InsertMany role_ranks: %v", err)
+	}
+
+	defer func() {
+		roleRanks.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}, "role_id": roleID})
+		usersCollection.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}})
+	}()
+
+	t.Run("absolute page 1", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank?role_id=6&page=1&page_size=2", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankHandler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("Expected 200, got %d (%s)", rr.Code, rr.Body.String())
+		}
+		var response map[string][]restapi.RoleRankEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		if len(lb) != 2 {
+			t.Fatalf("Expected 2 entries, got %d", len(lb))
+		}
+		if lb[0].PID != basePID+2 || lb[0].Rank != 1 || lb[0].TotalScore != 600 {
+			t.Errorf("rank1: got pid=%d score=%d rank=%d", lb[0].PID, lb[0].TotalScore, lb[0].Rank)
+		}
+		if lb[1].PID != basePID || lb[1].Rank != 2 || lb[1].TotalScore != 300 {
+			t.Errorf("rank2: got pid=%d score=%d rank=%d", lb[1].PID, lb[1].TotalScore, lb[1].Rank)
+		}
+		if !strings.Contains(lb[0].Name, "mrr_carol") {
+			t.Errorf("expected console-prefixed carol name, got %q", lb[0].Name)
+		}
+	})
+
+	t.Run("pid centered page", func(t *testing.T) {
+		davePID := basePID + 3
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank?role_id=6&pid="+strconv.Itoa(davePID)+"&page_size=2&page=99", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankHandler(rr, req)
+		var response map[string][]restapi.RoleRankEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		found := false
+		for _, e := range lb {
+			if e.PID == davePID {
+				found = true
+				if e.Rank != 4 {
+					t.Errorf("dave rank: got %d want 4", e.Rank)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expected dave on page, got %+v", lb)
+		}
+		if len(lb) != 2 || lb[0].Rank != 3 {
+			t.Errorf("expected window starting at rank 3, got %+v", lb)
+		}
+	})
+
+	t.Run("rb3_only sorts by rb3_score", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank?role_id=6&rb3_only=1&page=1&page_size=5", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankHandler(rr, req)
+		var response map[string][]restapi.RoleRankEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		if len(lb) < 1 {
+			t.Fatal("expected entries")
+		}
+		if lb[0].PID != basePID || lb[0].TotalScore != 300 {
+			t.Errorf("rb3_only rank1: got pid=%d score=%d", lb[0].PID, lb[0].TotalScore)
+		}
+		for _, e := range lb {
+			if e.PID == basePID+2 && e.TotalScore != 100 {
+				t.Errorf("carol rb3_only total should be 100, got %d", e.TotalScore)
+			}
+		}
+	})
+
+	t.Run("rb3_only excludes zero rb3_score", func(t *testing.T) {
+		zeroPID := basePID + 10
+		roleRanks.InsertOne(ctx, models.RoleRank{PID: zeroPID, RoleID: roleID, TotalScore: 9000, RB3Score: 0})
+		defer roleRanks.DeleteOne(ctx, bson.M{"pid": zeroPID, "role_id": roleID})
+
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank?role_id=6&rb3_only=1&page=1&page_size=20", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankHandler(rr, req)
+		var response map[string][]restapi.RoleRankEntry
+		decodeResponse(t, rr, &response)
+		for _, e := range response["leaderboard"] {
+			if e.PID == zeroPID {
+				t.Fatalf("pid with rb3_score=0 should be excluded, got %+v", e)
+			}
+		}
+	})
+
+	t.Run("unscored pid returns last page", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/leaderboards/role-rank?role_id=6&pid=999999002&page_size=2", nil)
+		rr := httptest.NewRecorder()
+		restapi.RoleRankHandler(rr, req)
+		var response map[string][]restapi.RoleRankEntry
+		decodeResponse(t, rr, &response)
+		lb := response["leaderboard"]
+		if len(lb) != 1 || lb[0].Rank != 5 {
+			t.Errorf("expected last page with rank 5, got %+v", lb)
+		}
+	})
+}
+
+func TestRoleRankHandler_ParityWithLegacyAfterRebuild(t *testing.T) {
+	ctx := context.Background()
+	db := database.GocentralDatabase
+	scores := db.Collection("scores")
+	users := db.Collection("users")
+
+	roleID := 9
+	basePID := 884100
+	pids := []int{basePID, basePID + 1}
+
+	scores.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}, "role_id": roleID})
+	users.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}})
+	defer func() {
+		scores.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}, "role_id": roleID})
+		users.DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}})
+		db.Collection(database.RoleRanksCollectionName).DeleteMany(ctx, bson.M{"pid": bson.M{"$in": pids}, "role_id": roleID})
+	}()
+
+	for i, name := range []string{"parity_a", "parity_b"} {
+		users.InsertOne(ctx, map[string]interface{}{
+			"pid": pids[i], "username": name, "console_type": 1,
+		})
+	}
+	scores.InsertMany(ctx, []interface{}{
+		models.Score{OwnerPID: basePID, SongID: 1050, RoleID: roleID, Score: 400, Stars: 5, DiffID: 2, NotesPercent: 90},
+		models.Score{OwnerPID: basePID + 1, SongID: 1050, RoleID: roleID, Score: 200, Stars: 5, DiffID: 2, NotesPercent: 90},
+		models.Score{OwnerPID: basePID, SongID: 2000, RoleID: roleID, Score: 50, Stars: 5, DiffID: 2, NotesPercent: 90},
+	})
+
+	if _, err := database.RebuildRoleRanks(ctx, db); err != nil {
+		t.Fatalf("RebuildRoleRanks: %v", err)
+	}
+
+	legacyReq := httptest.NewRequest("GET", "/leaderboards/role-rank/legacy?role_id=9&page=1&page_size=10", nil)
+	legacyRR := httptest.NewRecorder()
+	restapi.RoleRankLegacyHandler(legacyRR, legacyReq)
+	var legacyResp map[string][]restapi.RoleRankEntry
+	decodeResponse(t, legacyRR, &legacyResp)
+
+	matReq := httptest.NewRequest("GET", "/leaderboards/role-rank?role_id=9&page=1&page_size=10", nil)
+	matRR := httptest.NewRecorder()
+	restapi.RoleRankHandler(matRR, matReq)
+	var matResp map[string][]restapi.RoleRankEntry
+	decodeResponse(t, matRR, &matResp)
+
+	// Compare only our fixture PIDs (rebuild includes other test residue)
+	legacyByPID := map[int]restapi.RoleRankEntry{}
+	for _, e := range legacyResp["leaderboard"] {
+		if e.PID == basePID || e.PID == basePID+1 {
+			legacyByPID[e.PID] = e
+		}
+	}
+	matByPID := map[int]restapi.RoleRankEntry{}
+	for _, e := range matResp["leaderboard"] {
+		if e.PID == basePID || e.PID == basePID+1 {
+			matByPID[e.PID] = e
+		}
+	}
+	if len(legacyByPID) != 2 || len(matByPID) != 2 {
+		t.Fatalf("expected both boards to include fixture pids; legacy=%v mat=%v", legacyByPID, matByPID)
+	}
+	for _, pid := range pids {
+		if legacyByPID[pid].TotalScore != matByPID[pid].TotalScore {
+			t.Errorf("pid %d score mismatch: legacy=%d mat=%d", pid, legacyByPID[pid].TotalScore, matByPID[pid].TotalScore)
+		}
+	}
+	if legacyByPID[basePID].TotalScore != 450 || legacyByPID[basePID+1].TotalScore != 200 {
+		t.Errorf("unexpected fixture totals: %#v", legacyByPID)
+	}
+}
+
 // Tests the list banned players endpoint
 func TestListBannedPlayersHandler(t *testing.T) {
 	rr := makeRequest(t, "GET", "/admin/bans", nil, restapi.ListBannedPlayersHandler)
