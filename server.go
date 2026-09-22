@@ -130,6 +130,10 @@ func main() {
 	go servers.StartAuthServer()
 	go servers.StartSecureServer()
 
+	if database.UseMaterializedRoleRanks() {
+		log.Println("Materialized role_ranks enabled for jsonproto Total/RB3 boards (USE_MATERIALIZED_ROLE_RANKS)")
+	}
+
 	if envTrue(os.Getenv("DEBUGNETWORK")) {
 		// only enable for secure server now since that's the one that has the most complex network interactions, and the auth server is pretty straightforward
 		// TODO: have a way to enable debug network for the auth server as well, cba right now

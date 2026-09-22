@@ -6,6 +6,8 @@ import (
 	"rb3server/protocols/jsonproto/marshaler"
 	"rb3server/utils"
 
+	db "rb3server/database"
+
 	"github.com/ihatecompvir/nex-go"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -69,6 +71,15 @@ func (service MaxrankGetService) Handle(data string, database *mongo.Database, c
 		}
 
 	case LBTypeTotalScore, LBTypeRB3Only:
+		rb3Only := req.LBType == LBTypeRB3Only
+		if db.UseMaterializedRoleRanks() {
+			numScores, err = db.CountRoleRankPlayers(context.TODO(), database, req.RoleID, rb3Only, nil)
+			if err != nil {
+				return marshaler.MarshalResponse(service.Path(), []MaxrankGetResponse{{0}})
+			}
+			break
+		}
+
 		// Aggregated leaderboards - count unique users with scores
 		matchStage := bson.D{}
 
@@ -77,7 +88,7 @@ func (service MaxrankGetService) Handle(data string, database *mongo.Database, c
 		matchStage = append(matchStage, bson.E{Key: "setlist_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
 
 		// For RB3 Only, filter to song_id 1001-1106 (I think this is the full range)
-		if req.LBType == LBTypeRB3Only {
+		if rb3Only {
 			matchStage = append(matchStage, bson.E{Key: "song_id", Value: bson.D{{Key: "$gte", Value: 1001}, {Key: "$lte", Value: 1106}}})
 		}
 

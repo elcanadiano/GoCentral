@@ -181,9 +181,16 @@ func roleRankScoreField(rb3Only bool) string {
 }
 
 func roleRankPageFilter(roleID int, rb3Only bool) bson.M {
+	return roleRankBoardFilter(roleID, rb3Only, nil)
+}
+
+func roleRankBoardFilter(roleID int, rb3Only bool, pids []int) bson.M {
 	filter := bson.M{"role_id": roleID}
 	if rb3Only {
 		filter["rb3_score"] = bson.M{"$gt": 0}
+	}
+	if len(pids) > 0 {
+		filter["pid"] = bson.M{"$in": pids}
 	}
 	return filter
 }
@@ -196,6 +203,110 @@ func roleRankPlayerScore(row models.RoleRank, rb3Only bool) (score int, onBoard 
 		return row.RB3Score, true
 	}
 	return row.TotalScore, true
+}
+
+func copyFilter(src bson.M) bson.M {
+	dst := bson.M{}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// CountRoleRankPlayers returns how many players are on the materialized board.
+func CountRoleRankPlayers(ctx context.Context, db *mongo.Database, roleID int, rb3Only bool, pids []int) (int64, error) {
+	return db.Collection(RoleRanksCollectionName).CountDocuments(ctx, roleRankBoardFilter(roleID, rb3Only, pids))
+}
+
+// GetRoleRankEntriesBySkip returns a sorted page from role_ranks starting at 0-based skip.
+func GetRoleRankEntriesBySkip(ctx context.Context, db *mongo.Database, roleID int, rb3Only bool, skip, limit int64, pids []int) ([]RoleTotalEntry, error) {
+	if limit < 1 {
+		return []RoleTotalEntry{}, nil
+	}
+	if skip < 0 {
+		skip = 0
+	}
+
+	filter := roleRankBoardFilter(roleID, rb3Only, pids)
+	scoreField := roleRankScoreField(rb3Only)
+	coll := db.Collection(RoleRanksCollectionName)
+
+	cursor, err := coll.Find(ctx, filter, &options.FindOptions{
+		Skip:  &skip,
+		Limit: &limit,
+		Sort:  bson.D{{Key: scoreField, Value: -1}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var rows []models.RoleRank
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+
+	entries := make([]RoleTotalEntry, 0, len(rows))
+	rank := int(skip) + 1
+	for _, row := range rows {
+		score, _ := roleRankPlayerScore(row, rb3Only)
+		entries = append(entries, RoleTotalEntry{
+			PID:        row.PID,
+			TotalScore: score,
+			Rank:       rank,
+		})
+		rank++
+	}
+	return entries, nil
+}
+
+// GetRoleRankPlayerWindow returns a pageSize window aligned to rank0 % pageSize containing pid.
+// If the player is missing from the board, returns the top page (game player/get parity).
+func GetRoleRankPlayerWindow(ctx context.Context, db *mongo.Database, roleID int, rb3Only bool, pid, pageSize int, pids []int) ([]RoleTotalEntry, error) {
+	if pageSize < 1 {
+		pageSize = 19
+	}
+
+	filter := roleRankBoardFilter(roleID, rb3Only, pids)
+	scoreField := roleRankScoreField(rb3Only)
+	coll := db.Collection(RoleRanksCollectionName)
+
+	var rank0 int64
+	row, found, err := GetRoleRank(ctx, db, pid, roleID)
+	if err != nil {
+		return nil, err
+	}
+	playerScore, onBoard := roleRankPlayerScore(row, rb3Only)
+	if found && onBoard {
+		// Player must also pass optional pid filter (friends/console).
+		if len(pids) > 0 {
+			inFilter := false
+			for _, p := range pids {
+				if p == pid {
+					inFilter = true
+					break
+				}
+			}
+			if !inFilter {
+				onBoard = false
+			}
+		}
+	}
+	if found && onBoard {
+		higherFilter := copyFilter(filter)
+		higherFilter[scoreField] = bson.M{"$gt": playerScore}
+		higher, err := coll.CountDocuments(ctx, higherFilter)
+		if err != nil {
+			return nil, err
+		}
+		rank0 = higher
+	} else {
+		// Missing player → top page (matches live player.go aggregated path).
+		rank0 = 0
+	}
+
+	skip := rank0 - (rank0 % int64(pageSize))
+	return GetRoleRankEntriesBySkip(ctx, db, roleID, rb3Only, skip, int64(pageSize), pids)
 }
 
 // GetRoleRankPage returns a page of per-role rankings from the materialized role_ranks collection.
@@ -228,10 +339,7 @@ func GetRoleRankPage(ctx context.Context, db *mongo.Database, opts RoleRankPageO
 			}
 			skip = ((total - 1) / int64(opts.PageSize)) * int64(opts.PageSize)
 		} else {
-			higherFilter := bson.M{}
-			for k, v := range filter {
-				higherFilter[k] = v
-			}
+			higherFilter := copyFilter(filter)
 			higherFilter[scoreField] = bson.M{"$gt": playerScore}
 			higher, err := coll.CountDocuments(ctx, higherFilter)
 			if err != nil {
@@ -244,32 +352,5 @@ func GetRoleRankPage(ctx context.Context, db *mongo.Database, opts RoleRankPageO
 		skip = int64((opts.Page - 1) * opts.PageSize)
 	}
 
-	limit := int64(opts.PageSize)
-	cursor, err := coll.Find(ctx, filter, &options.FindOptions{
-		Skip:  &skip,
-		Limit: &limit,
-		Sort:  bson.D{{Key: scoreField, Value: -1}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var rows []models.RoleRank
-	if err := cursor.All(ctx, &rows); err != nil {
-		return nil, err
-	}
-
-	entries := make([]RoleTotalEntry, 0, len(rows))
-	rank := int(skip) + 1
-	for _, row := range rows {
-		score, _ := roleRankPlayerScore(row, opts.RB3Only)
-		entries = append(entries, RoleTotalEntry{
-			PID:        row.PID,
-			TotalScore: score,
-			Rank:       rank,
-		})
-		rank++
-	}
-	return entries, nil
+	return GetRoleRankEntriesBySkip(ctx, db, opts.RoleID, opts.RB3Only, skip, int64(opts.PageSize), nil)
 }
