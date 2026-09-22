@@ -178,6 +178,7 @@ func main() {
 		r.Get("/battles", restapi.BattleListHandler)
 
 		r.Get("/users/search", restapi.UserSearchHandler)
+		r.Get("/role-ranks", restapi.PlayerRoleRanksHandler)
 
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(restapi.AdminTokenAuth)

@@ -354,3 +354,76 @@ func GetRoleRankPage(ctx context.Context, db *mongo.Database, opts RoleRankPageO
 
 	return GetRoleRankEntriesBySkip(ctx, db, opts.RoleID, opts.RB3Only, skip, int64(opts.PageSize), nil)
 }
+
+// PlayerRoleRankSummary is one role's totals and ranks for a single player.
+type PlayerRoleRankSummary struct {
+	RoleID     int `json:"role_id"`
+	TotalScore int `json:"total_score"`
+	TotalRank  int `json:"total_rank"`
+	RB3Score   int `json:"rb3_score"`
+	RB3Rank    int `json:"rb3_rank"`
+}
+
+// ListRoleRanksForPID returns all role_ranks docs for pid, ordered by role_id ascending.
+func ListRoleRanksForPID(ctx context.Context, db *mongo.Database, pid int) ([]models.RoleRank, error) {
+	cursor, err := db.Collection(RoleRanksCollectionName).Find(
+		ctx,
+		bson.M{"pid": pid},
+		options.Find().SetSort(bson.D{{Key: "role_id", Value: 1}}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var rows []models.RoleRank
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []models.RoleRank{}
+	}
+	return rows, nil
+}
+
+func countHigherRoleRankScore(ctx context.Context, db *mongo.Database, roleID int, rb3Only bool, score int) (int64, error) {
+	filter := roleRankBoardFilter(roleID, rb3Only, nil)
+	filter[roleRankScoreField(rb3Only)] = bson.M{"$gt": score}
+	return db.Collection(RoleRanksCollectionName).CountDocuments(ctx, filter)
+}
+
+// GetPlayerRoleRankSummaries returns per-role totals and ranks for pid from role_ranks.
+// Roles without a document are omitted. rb3_rank is 0 when rb3_score is 0.
+func GetPlayerRoleRankSummaries(ctx context.Context, db *mongo.Database, pid int) ([]PlayerRoleRankSummary, error) {
+	rows, err := ListRoleRanksForPID(ctx, db, pid)
+	if err != nil {
+		return nil, err
+	}
+
+	summaries := make([]PlayerRoleRankSummary, 0, len(rows))
+	for _, row := range rows {
+		higherTotal, err := countHigherRoleRankScore(ctx, db, row.RoleID, false, row.TotalScore)
+		if err != nil {
+			return nil, err
+		}
+		totalRank := int(higherTotal) + 1
+
+		rb3Rank := 0
+		if row.RB3Score > 0 {
+			higherRB3, err := countHigherRoleRankScore(ctx, db, row.RoleID, true, row.RB3Score)
+			if err != nil {
+				return nil, err
+			}
+			rb3Rank = int(higherRB3) + 1
+		}
+
+		summaries = append(summaries, PlayerRoleRankSummary{
+			RoleID:     row.RoleID,
+			TotalScore: row.TotalScore,
+			TotalRank:  totalRank,
+			RB3Score:   row.RB3Score,
+			RB3Rank:    rb3Rank,
+		})
+	}
+	return summaries, nil
+}

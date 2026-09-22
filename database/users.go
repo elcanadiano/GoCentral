@@ -52,3 +52,20 @@ func FindUsersByUsernamePrefix(ctx context.Context, db *mongo.Database, q string
 	}
 	return results, nil
 }
+
+// GetUserSearchResultByPID returns the minimal user identity for pid, or false if missing.
+func GetUserSearchResultByPID(ctx context.Context, db *mongo.Database, pid int) (UserSearchResult, bool, error) {
+	var user UserSearchResult
+	err := db.Collection("users").FindOne(
+		ctx,
+		bson.M{"pid": pid},
+		options.FindOne().SetProjection(bson.M{"pid": 1, "username": 1, "console_type": 1, "_id": 0}),
+	).Decode(&user)
+	if err == mongo.ErrNoDocuments {
+		return UserSearchResult{}, false, nil
+	}
+	if err != nil {
+		return UserSearchResult{}, false, err
+	}
+	return user, true, nil
+}
