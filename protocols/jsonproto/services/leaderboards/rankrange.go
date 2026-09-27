@@ -81,44 +81,59 @@ func (service RankRangeGetService) Handle(data string, database *mongo.Database,
 	isAggregated := req.LBType == LBTypeTotalScore || req.LBType == LBTypeRB3Only
 
 	if isAggregated {
-		matchStage := bson.D{}
+		rb3Only := req.LBType == LBTypeRB3Only
+		if db.UseMaterializedRoleRanks() {
+			entries, err := db.GetRoleRankEntriesBySkip(context.TODO(), database, req.RoleID, rb3Only, startRank, numRows, nil)
+			if err != nil {
+				log.Println("Failed to query materialized role ranks:", err)
+				return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			}
+			for _, e := range entries {
+				aggregatedScores = append(aggregatedScores, struct {
+					PID        int `bson:"_id"`
+					TotalScore int `bson:"totalScore"`
+				}{PID: e.PID, TotalScore: e.TotalScore})
+			}
+		} else {
+			matchStage := bson.D{}
 
-		// Exclude battle and setlist scores from total score calculations
-		matchStage = append(matchStage, bson.E{Key: "battle_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
-		matchStage = append(matchStage, bson.E{Key: "setlist_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
+			// Exclude battle and setlist scores from total score calculations
+			matchStage = append(matchStage, bson.E{Key: "battle_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
+			matchStage = append(matchStage, bson.E{Key: "setlist_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
 
-		// For RB3 Only, filter to song_id 1001-1106 (I think this is the full range)
-		if req.LBType == LBTypeRB3Only {
-			matchStage = append(matchStage, bson.E{Key: "song_id", Value: bson.D{{Key: "$gte", Value: 1001}, {Key: "$lte", Value: 1106}}})
-		}
+			// For RB3 Only, filter to song_id 1001-1106 (I think this is the full range)
+			if rb3Only {
+				matchStage = append(matchStage, bson.E{Key: "song_id", Value: bson.D{{Key: "$gte", Value: 1001}, {Key: "$lte", Value: 1106}}})
+			}
 
-		matchStage = append(matchStage, bson.E{Key: "role_id", Value: req.RoleID})
+			matchStage = append(matchStage, bson.E{Key: "role_id", Value: req.RoleID})
 
-		// Build aggregation pipeline
-		// i genuinely hate mongo syntax
-		pipeline := mongo.Pipeline{}
-		if len(matchStage) > 0 {
-			pipeline = append(pipeline, bson.D{{Key: "$match", Value: matchStage}})
-		}
-		pipeline = append(pipeline,
-			bson.D{{Key: "$group", Value: bson.D{
-				{Key: "_id", Value: "$pid"},
-				{Key: "totalScore", Value: bson.D{{Key: "$sum", Value: "$score"}}},
-			}}},
-			bson.D{{Key: "$sort", Value: bson.D{{Key: "totalScore", Value: -1}}}},
-			bson.D{{Key: "$skip", Value: startRank}},
-			bson.D{{Key: "$limit", Value: numRows}},
-		)
+			// Build aggregation pipeline
+			// i genuinely hate mongo syntax
+			pipeline := mongo.Pipeline{}
+			if len(matchStage) > 0 {
+				pipeline = append(pipeline, bson.D{{Key: "$match", Value: matchStage}})
+			}
+			pipeline = append(pipeline,
+				bson.D{{Key: "$group", Value: bson.D{
+					{Key: "_id", Value: "$pid"},
+					{Key: "totalScore", Value: bson.D{{Key: "$sum", Value: "$score"}}},
+				}}},
+				bson.D{{Key: "$sort", Value: bson.D{{Key: "totalScore", Value: -1}}}},
+				bson.D{{Key: "$skip", Value: startRank}},
+				bson.D{{Key: "$limit", Value: numRows}},
+			)
 
-		cursor, err := scoresCollection.Aggregate(context.TODO(), pipeline)
-		if err != nil {
-			return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
-		}
-		defer cursor.Close(context.TODO())
+			cursor, err := scoresCollection.Aggregate(context.TODO(), pipeline)
+			if err != nil {
+				return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			}
+			defer cursor.Close(context.TODO())
 
-		if err = cursor.All(context.Background(), &aggregatedScores); err != nil {
-			log.Println("Failed to decode aggregated scores:", err)
-			return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			if err = cursor.All(context.Background(), &aggregatedScores); err != nil {
+				log.Println("Failed to decode aggregated scores:", err)
+				return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			}
 		}
 	} else {
 		filter := bson.M{"song_id": req.SongID, "role_id": req.RoleID}

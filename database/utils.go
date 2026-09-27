@@ -232,6 +232,26 @@ func GetPIDForUsername(username string) int {
 	return int(user.PID)
 }
 
+// FormatConsolePrefixedUsername appends a console label to a username
+// (e.g. "Player [RPCS3]"), matching GetConsolePrefixedUsernameForPID.
+func FormatConsolePrefixedUsername(username string, consoleType int) string {
+	if username == "" {
+		return "Unnamed Player"
+	}
+	switch consoleType {
+	case 0:
+		return username + " [360]"
+	case 1:
+		return username + " [PS3]"
+	case 2:
+		return username + " [Wii]"
+	case 3:
+		return username + " [RPCS3]"
+	default:
+		return username
+	}
+}
+
 // gets the username of the user with a console specific prefix
 // e.g. "Player [360]"
 func GetConsolePrefixedUsernameForPID(pid int) string {
@@ -241,22 +261,7 @@ func GetConsolePrefixedUsernameForPID(pid int) string {
 
 	_ = usersCollection.FindOne(nil, bson.M{"pid": pid}).Decode(&user)
 
-	if user.Username != "" {
-		switch user.ConsoleType {
-		case 0:
-			return user.Username + " [360]"
-		case 1:
-			return user.Username + " [PS3]"
-		case 2:
-			return user.Username + " [Wii]"
-		case 3:
-			return user.Username + " [RPCS3]"
-		default:
-			return user.Username
-		}
-	} else {
-		return "Unnamed Player"
-	}
+	return FormatConsolePrefixedUsername(user.Username, user.ConsoleType)
 }
 
 // returns a map of usernames with console specific prefixes for a list of PIDs
@@ -291,20 +296,7 @@ func GetConsolePrefixedUsernamesByPIDs(ctx context.Context, database *mongo.Data
 		}
 
 		// do the same prefix logic as the single-user function
-		var prefixedName string
-		switch user.ConsoleType {
-		case 0:
-			prefixedName = user.Username + " [360]"
-		case 1:
-			prefixedName = user.Username + " [PS3]"
-		case 2:
-			prefixedName = user.Username + " [Wii]"
-		case 3:
-			prefixedName = user.Username + " [RPCS3]"
-		default:
-			prefixedName = user.Username
-		}
-		usernameMap[user.PID] = prefixedName
+		usernameMap[user.PID] = FormatConsolePrefixedUsername(user.Username, user.ConsoleType)
 	}
 
 	return usernameMap, cursor.Err()

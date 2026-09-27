@@ -21,3 +21,6 @@
 
 binary_data/*
 .DS_Store
+
+.mongo-data
+.mongo-log

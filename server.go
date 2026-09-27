@@ -85,7 +85,13 @@ func main() {
 
 	log.Println("Successfully established connection to MongoDB")
 
-	database.GocentralDatabase = client.Database("gocentral")
+	mongoDatabase := os.Getenv("MONGODATABASE")
+	if mongoDatabase == "" {
+		mongoDatabase = "gocentral"
+	}
+
+	database.GocentralDatabase = client.Database(mongoDatabase)
+	log.Printf("Using MongoDB database %q", mongoDatabase)
 
 	configCollection := database.GocentralDatabase.Collection("config")
 
@@ -124,6 +130,10 @@ func main() {
 	go servers.StartAuthServer()
 	go servers.StartSecureServer()
 
+	if database.UseMaterializedRoleRanks() {
+		log.Println("Materialized role_ranks enabled for jsonproto Total/RB3 boards (USE_MATERIALIZED_ROLE_RANKS)")
+	}
+
 	if envTrue(os.Getenv("DEBUGNETWORK")) {
 		// only enable for secure server now since that's the one that has the most complex network interactions, and the auth server is pretty straightforward
 		// TODO: have a way to enable debug network for the auth server as well, cba right now
@@ -138,6 +148,12 @@ func main() {
 	if enableRESTAPI {
 		r := chi.NewRouter()
 		r.Use(middleware.Recoverer)
+
+		// Live REST request latency logging (Chi/HTTP only — not NEX). Off by default.
+		if envTrue(os.Getenv("ENABLERESTBENCHMARK")) {
+			r.Use(restapi.RequestTimingMiddleware)
+			log.Println("REST request timing middleware enabled (ENABLERESTBENCHMARK)")
+		}
 
 		// used to check if the server is up
 		r.Get("/health", restapi.HealthHandler)
@@ -156,8 +172,13 @@ func main() {
 
 		r.Get("/leaderboards/song", restapi.LeaderboardHandler)
 		r.Get("/leaderboards/battle", restapi.BattleLeaderboardHandler)
+		r.Get("/leaderboards/role-rank", restapi.RoleRankHandler)
+		r.Get("/leaderboards/role-rank/legacy", restapi.RoleRankLegacyHandler)
 
 		r.Get("/battles", restapi.BattleListHandler)
+
+		r.Get("/users/search", restapi.UserSearchHandler)
+		r.Get("/role-ranks", restapi.PlayerRoleRanksHandler)
 
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(restapi.AdminTokenAuth)

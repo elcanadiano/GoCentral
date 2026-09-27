@@ -87,76 +87,106 @@ func (service PlayerGetService) Handle(data string, database *mongo.Database, cl
 			}
 		}
 
-		matchStage := bson.D{}
+		rb3Only := req.LBType == LBTypeRB3Only
 
-		// Exclude battle and setlist scores from total score calculations
-		matchStage = append(matchStage, bson.E{Key: "battle_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
-		matchStage = append(matchStage, bson.E{Key: "setlist_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
-
-		// For RB3 Only, filter to song_id 1001-1106 (I think this is the full range)
-		if req.LBType == LBTypeRB3Only {
-			matchStage = append(matchStage, bson.E{Key: "song_id", Value: bson.D{{Key: "$gte", Value: 1001}, {Key: "$lte", Value: 1106}}})
+		var pageScores []struct {
+			PID        int
+			TotalScore int
 		}
+		var startRank int64
 
-		matchStage = append(matchStage, bson.E{Key: "role_id", Value: req.RoleID})
+		if db.UseMaterializedRoleRanks() {
+			entries, err := db.GetRoleRankPlayerWindow(context.TODO(), database, req.RoleID, rb3Only, req.PID000, 19, pidFilter)
+			if err != nil {
+				log.Println("Failed to query materialized role rank player window:", err)
+				return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			}
+			for _, e := range entries {
+				pageScores = append(pageScores, struct {
+					PID        int
+					TotalScore int
+				}{PID: e.PID, TotalScore: e.TotalScore})
+			}
+			if len(entries) > 0 {
+				startRank = int64(entries[0].Rank - 1)
+			}
+		} else {
+			matchStage := bson.D{}
 
-		if len(pidFilter) > 0 {
-			matchStage = append(matchStage, bson.E{Key: "pid", Value: bson.D{{Key: "$in", Value: pidFilter}}})
-		}
+			// Exclude battle and setlist scores from total score calculations
+			matchStage = append(matchStage, bson.E{Key: "battle_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
+			matchStage = append(matchStage, bson.E{Key: "setlist_id", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gt", Value: 0}}}}})
 
-		pipeline := mongo.Pipeline{}
-		if len(matchStage) > 0 {
-			pipeline = append(pipeline, bson.D{{Key: "$match", Value: matchStage}})
-		}
-		pipeline = append(pipeline,
-			bson.D{{Key: "$group", Value: bson.D{
-				{Key: "_id", Value: "$pid"},
-				{Key: "totalScore", Value: bson.D{{Key: "$sum", Value: "$score"}}},
-			}}},
-			bson.D{{Key: "$sort", Value: bson.D{{Key: "totalScore", Value: -1}}}},
-		)
+			// For RB3 Only, filter to song_id 1001-1106 (I think this is the full range)
+			if rb3Only {
+				matchStage = append(matchStage, bson.E{Key: "song_id", Value: bson.D{{Key: "$gte", Value: 1001}, {Key: "$lte", Value: 1106}}})
+			}
 
-		cursor, err := scoresCollection.Aggregate(context.TODO(), pipeline)
-		if err != nil {
-			return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
-		}
+			matchStage = append(matchStage, bson.E{Key: "role_id", Value: req.RoleID})
 
-		var allAggregatedScores []struct {
-			PID        int `bson:"_id"`
-			TotalScore int `bson:"totalScore"`
-		}
-		if err = cursor.All(context.TODO(), &allAggregatedScores); err != nil {
+			if len(pidFilter) > 0 {
+				matchStage = append(matchStage, bson.E{Key: "pid", Value: bson.D{{Key: "$in", Value: pidFilter}}})
+			}
+
+			pipeline := mongo.Pipeline{}
+			if len(matchStage) > 0 {
+				pipeline = append(pipeline, bson.D{{Key: "$match", Value: matchStage}})
+			}
+			pipeline = append(pipeline,
+				bson.D{{Key: "$group", Value: bson.D{
+					{Key: "_id", Value: "$pid"},
+					{Key: "totalScore", Value: bson.D{{Key: "$sum", Value: "$score"}}},
+				}}},
+				bson.D{{Key: "$sort", Value: bson.D{{Key: "totalScore", Value: -1}}}},
+			)
+
+			cursor, err := scoresCollection.Aggregate(context.TODO(), pipeline)
+			if err != nil {
+				return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			}
+
+			var allAggregatedScores []struct {
+				PID        int `bson:"_id"`
+				TotalScore int `bson:"totalScore"`
+			}
+			if err = cursor.All(context.TODO(), &allAggregatedScores); err != nil {
+				cursor.Close(context.TODO())
+				return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
+			}
 			cursor.Close(context.TODO())
-			return marshaler.GenerateEmptyJSONResponse(service.Path()), nil
-		}
-		cursor.Close(context.TODO())
 
-		playerRank := -1
-		for i, score := range allAggregatedScores {
-			if score.PID == req.PID000 {
-				playerRank = i
-				break
+			playerRank := -1
+			for i, score := range allAggregatedScores {
+				if score.PID == req.PID000 {
+					playerRank = i
+					break
+				}
+			}
+
+			if playerRank == -1 {
+				playerRank = 0
+			}
+
+			// calc page start
+			startRank = int64(playerRank - (playerRank % 19))
+			limit := int64(19)
+
+			// Extract the page of results
+			endIdx := int(startRank + limit)
+			if endIdx > len(allAggregatedScores) {
+				endIdx = len(allAggregatedScores)
+			}
+			startIdx := int(startRank)
+			if startIdx > len(allAggregatedScores) {
+				startIdx = len(allAggregatedScores)
+			}
+			for _, score := range allAggregatedScores[startIdx:endIdx] {
+				pageScores = append(pageScores, struct {
+					PID        int
+					TotalScore int
+				}{PID: score.PID, TotalScore: score.TotalScore})
 			}
 		}
-
-		if playerRank == -1 {
-			playerRank = 0
-		}
-
-		// calc page start
-		startRank := int64(playerRank - (playerRank % 19))
-		limit := int64(19)
-
-		// Extract the page of results
-		endIdx := int(startRank + limit)
-		if endIdx > len(allAggregatedScores) {
-			endIdx = len(allAggregatedScores)
-		}
-		startIdx := int(startRank)
-		if startIdx > len(allAggregatedScores) {
-			startIdx = len(allAggregatedScores)
-		}
-		pageScores := allAggregatedScores[startIdx:endIdx]
 
 		// Collect PIDs for name lookup
 		playerPIDs := make([]int, 0)
