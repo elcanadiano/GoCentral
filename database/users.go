@@ -9,14 +9,27 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// UserSearchResult is a minimal user identity for REST search / future detail endpoints.
+// UserSearchResult is a minimal user identity for REST search / role-ranks detail.
+// Username is console-prefixed (e.g. "elcanadiano [RPCS3]").
 type UserSearchResult struct {
-	PID         int    `bson:"pid" json:"pid"`
-	Username    string `bson:"username" json:"username"`
-	ConsoleType int    `bson:"console_type" json:"console_type"`
+	PID      int    `json:"pid"`
+	Username string `json:"username"`
+}
+
+type userIdentityRow struct {
+	PID         int    `bson:"pid"`
+	Username    string `bson:"username"`
+	ConsoleType int    `bson:"console_type"`
 }
 
 const userSearchDefaultLimit = 5
+
+func userSearchResultFromRow(row userIdentityRow) UserSearchResult {
+	return UserSearchResult{
+		PID:      row.PID,
+		Username: FormatConsolePrefixedUsername(row.Username, row.ConsoleType),
+	}
+}
 
 // FindUsersByUsernamePrefix returns up to limit users whose username starts with q
 // (case-insensitive autocomplete). q should already be validated by the caller.
@@ -43,29 +56,31 @@ func FindUsersByUsernamePrefix(ctx context.Context, db *mongo.Database, q string
 	}
 	defer cursor.Close(ctx)
 
-	var results []UserSearchResult
-	if err := cursor.All(ctx, &results); err != nil {
+	var rows []userIdentityRow
+	if err := cursor.All(ctx, &rows); err != nil {
 		return nil, err
 	}
-	if results == nil {
-		results = []UserSearchResult{}
+
+	results := make([]UserSearchResult, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, userSearchResultFromRow(row))
 	}
 	return results, nil
 }
 
 // GetUserSearchResultByPID returns the minimal user identity for pid, or false if missing.
 func GetUserSearchResultByPID(ctx context.Context, db *mongo.Database, pid int) (UserSearchResult, bool, error) {
-	var user UserSearchResult
+	var row userIdentityRow
 	err := db.Collection("users").FindOne(
 		ctx,
 		bson.M{"pid": pid},
 		options.FindOne().SetProjection(bson.M{"pid": 1, "username": 1, "console_type": 1, "_id": 0}),
-	).Decode(&user)
+	).Decode(&row)
 	if err == mongo.ErrNoDocuments {
 		return UserSearchResult{}, false, nil
 	}
 	if err != nil {
 		return UserSearchResult{}, false, err
 	}
-	return user, true, nil
+	return userSearchResultFromRow(row), true, nil
 }

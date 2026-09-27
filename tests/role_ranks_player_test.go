@@ -77,7 +77,7 @@ func TestPlayerRoleRanksHandler_Summaries(t *testing.T) {
 			Rankings []database.PlayerRoleRankSummary `json:"rankings"`
 		}
 		decodeResponse(t, rr, &response)
-		if response.User.PID != pid || response.User.Username != "prr_alice" || response.User.ConsoleType != 3 {
+		if response.User.PID != pid || response.User.Username != "prr_alice [RPCS3]" {
 			t.Fatalf("unexpected user: %+v", response.User)
 		}
 		if response.Rankings == nil || len(response.Rankings) != 0 {

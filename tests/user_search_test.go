@@ -155,7 +155,7 @@ func TestUserSearchHandler_SubstringAndCap(t *testing.T) {
 			t.Fatalf("expected 1, got %+v", response["users"])
 		}
 		u := response["users"][0]
-		if u.PID != basePID || u.Username != "elcanadiano" || u.ConsoleType != 0 {
+		if u.PID != basePID || u.Username != "elcanadiano [360]" {
 			t.Fatalf("unexpected user: %+v", u)
 		}
 	})
